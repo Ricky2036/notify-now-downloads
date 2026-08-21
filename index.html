@@ -121,54 +121,26 @@
   </div>
 
 <script>
-  // ===== GitHub 计数器配置 =====
-  const OWNER = "Ricky2036";
-  const REPO  = "notify-now-downloads";
-  const PATH  = "count.json";
-  // 前端写入需令牌：用「仅本仓库 contents:write」的 fine-grained PAT 替换下方占位。
-  const GH_TOKEN = "REPLACE_WITH_FINE_GRAINED_PAT";
-  const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`;
+  // ===== 下载计数（服务端中转，前端不含 token）=====
+  // 把下方占位替换为你的腾讯云 SCF 公网 URL（SCF 控制台「触发管理」获取，形如 https://xxx.apigw.tencentcs.com/release/counter）
+  const COUNTER_API = "REPLACE_WITH_SCF_URL";
+  const USE_API = COUNTER_API && COUNTER_API !== "REPLACE_WITH_SCF_URL";
 
   const el = () => document.getElementById("dl-count");
   function setCount(n) { if (typeof n === "number" && !isNaN(n)) el().textContent = n; }
-  function b64(s) { return btoa(unescape(encodeURIComponent(String(s)))); }
-  function ub64(s) { return decodeURIComponent(escape(atob(s))); }
 
-  async function readCount() {
-    const r = await fetch(API, { cache: "no-store" });
-    if (!r.ok) throw new Error("read " + r.status);
-    const d = await r.json();
-    return { count: parseInt(ub64(d.content), 10) || 0, sha: d.sha };
-  }
-  async function writeCount(count, sha) {
-    const r = await fetch(API, {
-      method: "PUT",
-      headers: {
-        "Authorization": "Bearer " + GH_TOKEN,
-        "Content-Type": "application/json",
-        "Accept": "application/vnd.github+json"
-      },
-      body: JSON.stringify({ message: "bump download count", content: b64(count), sha })
-    });
-    if (!r.ok) throw new Error("write " + r.status);
-    return r.json();
-  }
   async function refreshCount() {
-    try { const { count } = await readCount(); setCount(count); } catch (e) {}
+    // 优先走 SCF（可读最新值）；未配置时回退到同源 count.json（只读，不增）
+    if (USE_API) {
+      try { const r = await fetch(COUNTER_API + "/count", { cache: "no-store" }); if (r.ok) { const j = await r.json(); setCount(j.count); return; } } catch (e) {}
+    }
+    try { const r = await fetch("./count.json", { cache: "no-store" }); if (r.ok) { const j = await r.json(); setCount(j.count || 0); } } catch (e) {}
   }
   async function bumpCount() {
-    // 乐观更新：点击瞬间本地 +1，立即反馈
     const cur = parseInt(el().textContent, 10);
-    if (!isNaN(cur)) setCount(cur + 1);
-    // 用 GitHub API 自增（带冲突重试）
-    if (GH_TOKEN === "REPLACE_WITH_FINE_GRAINED_PAT") { refreshCount(); return; }
-    try {
-      let { count, sha } = await readCount();
-      for (let i = 0; i < 3; i++) {
-        try { const d = await writeCount(count + 1, sha); setCount(count + 1); return; }
-        catch (e) { const r = await readCount(); count = r.count; sha = r.sha; }
-      }
-    } catch (e) { refreshCount(); }
+    if (!isNaN(cur)) setCount(cur + 1);   // 乐观更新，点击瞬间反馈
+    if (!USE_API) return;                  // 未接后端则不持久化
+    try { const r = await fetch(COUNTER_API + "/bump", { method: "POST" }); if (r.ok) { const j = await r.json(); setCount(j.count); } } catch (e) {}
   }
 
   window.addEventListener("load", refreshCount);
